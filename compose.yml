@@ -1,7 +1,49 @@
 ---
-ollama:
-  image: docker.io/ollama/ollama:latest
-  volumes:
-    - ./ollama:/root/.ollama
+services:
+  ollama:
+    image: docker.io/ollama/ollama:rocm
+    group_add:
+      - keep-groups
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    volumes:
+      - ./volumes/ollama:/root/.ollama
     ports:
-      - 11434:11434    
+      - 11434:11434
+
+  nginx-ollama-auth:
+    image: docker.io/library/nginx:alpine
+    volumes:
+      - ./volumes/nginx-ollama-auth/etc/nginx/templates:/etc/nginx/templates
+
+  cloudflared-nginx-ollama:
+    image: docker.io/cloudflare/cloudflared:latest
+    volumes:
+      # Run script/bootstrap to populate /home/notroot/.cloudflared and ensure the existence of cert.pem credentials
+      - ./volumes/cloudflared-nginx-ollama/home/notroot/.cloudflared:/home/notroot/.cloudflared
+
+  librechat:
+    image: docker.io/librechat/librechat:v0.7.7
+    env_file: ./env.d/librechat.env
+    environment:
+      # I tried to remove everything I added here from ./env.d/librechat.env
+      - MONGO_URI=mongodb://mongodb:27017/LibreChat
+    ports:
+      - 3080:3080
+    volumes:
+      - ./volumes/librechat:/app/backend/data
+      - ./librechat.yaml:/app/librechat.yaml
+    depends_on:
+      - mongodb
+
+  mongodb:
+    image: docker.io/library/mongo:8
+    volumes:
+      - ./volumes/mongodb:/data/db
+    command: mongod --noauth
+
+  cloudflared-librechat:
+    env_file: ./env.d/cloudflared.env
+    image: docker.io/cloudflare/cloudflared:latest
+    command: tunnel run

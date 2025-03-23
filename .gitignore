@@ -1,1 +1,2 @@
-ollama/
+volumes/*
+!volumes/nginx-ollama-auth/etc/

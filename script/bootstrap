@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -e
+
+# Basic requirements
+
+require_command() {
+  which $1 > /dev/null || { echo "$1 not found"; exit 1; }
+}
+
+require_command podman
+require_command md5sum
+
+# Process arguments
+
+force=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -f|--force)
+      force=true
+      shift
+      ;;
+    # Example of how to process a flag with a value
+    # -c|--value-c)
+    #   value_c="$2"
+    #   shift 2
+    #   ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+# Note for these variables, *_host paths must start with `./`
+cloudflared_image="docker.io/cloudflare/cloudflared:latest"
+cloudflared_home_host="./volumes/cloudflared-nginx-ollama/home/nonroot/.cloudflared"
+cloudflared_home_container="/home/nonroot/.cloudflared"
+cloudflared_tunnel_name="ollama-nginx"
+
+shared_jwt_credentials_host="./volumes/shared/jwt-credentials"
+shared_jwt_credentials_container="/jwt-credentials"
+shared_jwt_private_key="${shared_jwt_credentials_container}/nginx-ollama-auth.pem"
+shared_jwt_public_key="${shared_jwt_credentials_container}/nginx-ollama-auth.public.pem"
+
+jwt_keygen_containerfile="Containerfile.jwt-keygen"
+jwt_image_version="md5sum Containerfile.jwt-keygen | awk '{print $1}' | cut -c 1-12"
+jwt_keygen_image="jwt-keygen:${jwt_image_version}"
+
+ensure_volumes() {
+  mkdir -p ${shared_jwt_credentials_host}
+  mkdir -p ${cloudflared_home_host}
+}
+
+ensure_jwt_keygen_image() {
+  echo "Ensuring jwt_keygen image exists..."
+
+  if ! podman image exists ${jwt_keygen_image}; then
+    echo "  ! building jwt_keygen image"
+    podman build -t ${jwt_keygen_image} -f ${jwt_keygen_containerfile} .
+  fi
+}
+
+jwt_keygen_run() {
+  podman run -it --rm \
+         -v ${shared_jwt_credentials_host}:${shared_jwt_credentials_container} \
+         ${jwt_keygen_image} \
+         $@
+}
+
+cloudflared_run() {
+  podman run -it --rm \
+         --userns=keep-id \
+         -v ${cloudflared_home_host}:${cloudflared_home_container} \
+         -v ${shared_jwt_credentials_host}:${shared_jwt_credentials_container} \
+         ${cloudflared_image} \
+         $@
+}
+
+cloudflared_tunnel_exists() {
+  (cloudflared_run tunnel list) | grep -q ${cloudflared_tunnel_name}
+}
+
+ensure_cloudflare_login() {
+  echo "Ensuring cloudflared is logged in..."
+  if [ "${force}" = "true" ] || [ ! -e ${cloudflared_home}/cert.key ]; then
+    echo "  ! running cloudflared login"
+    cloudflared_run tunnel login
+  fi
+}
+
+ensure_cloudflare_tunnel() {
+  echo "Ensuring cloudflared tunnel exists..."
+  if [ "${force}" = "true" ] || ! cloudflared_tunnel_exists; then
+    echo "  ! running cloudflared tunnel create ${cloudflared_tunnel_name}"
+    cloudflared_run tunnel create ${cloudflared_tunnel_name}
+  fi
+}
+
+ensure_jwt_keys() {
+  echo "Ensuring JWT keys exist..."
+  if [ "${force}" = "true" ] || [ ! -e ${shared_jwt_private_key} ] || [ ! -e ${shared_jwt_public_key} ]; then
+    echo "  ! generating JWT keys"
+    jwt_keygen_run \
+      openssl \
+      genpkey \
+      -algorithm RSA \
+      -out ${shared_jwt_private_key}
+
+    jwt_keygen_run \
+      openssl \
+      rsa \
+      -in ${shared_jwt_private_key} \
+      -pubout -out
+  fi
+}
+
+ensure_volumes
+ensure_cloudflare_login
+ensure_cloudflare_tunnel # TODO if force is true we need to delete the tunnel if it exists
+ensure_jwt_keygen_image
+ensure_jwt_keys

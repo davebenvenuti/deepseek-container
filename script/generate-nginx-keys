@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+output_dir="volumes/nginx-ollama-auth"
+private_key="${output_dir}/nginx-ollama-auth.pem"
+public_key="${output_dir}/nginx-ollama-auth.pub"
+jwk="${output_dir}/jwk.json"
+
+echo "Generating ${private_key}..."
+openssl genpkey -algorithm RSA -out $private_key
+
+echo "Generating ${public_key}..."
+openssl rsa -in $private_key -pubout -out $public_key
+
+echo "Generating ${jwk}..."
+echo '{
+  "kty": "RSA",
+  "n": "'$(openssl rsa -in $private_key -modulus -noout | cut -d= -f2 | xxd -r -p | base64 | tr -d '\n')'",
+  "e": "'$(openssl rsa -in $private_key -text -noout | grep 'Exponent:' | awk '{print $3}' | xxd -r -p | base64 | tr -d '\n')'",
+  "d": "'$(openssl rsa -in $private_key -text -noout | grep -A 100 'privateExponent:' | grep -v 'privateExponent:' | tr -d '\n[:space:]:' | xxd -r -p | base64 | tr -d '\n')'"
+}' > $jwk
